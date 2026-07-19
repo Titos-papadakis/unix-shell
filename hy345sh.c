@@ -2,7 +2,7 @@
  * hy345sh - a small unix shell
  *
  * HY345 - Leitourgika Systimata, Assignment 1
- * Name: <SYMPLIROSE TO ONOMA SOU EDW>
+ * Name: Papadakis Ioannis Titos
  * AM: csd5200
  */
 
