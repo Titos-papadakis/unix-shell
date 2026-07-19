@@ -41,6 +41,10 @@ typedef enum {
 typedef struct {
     TokenType type;
     char text[INPUT_SIZE];
+    // noexp[k] == 1 means text[k] came from inside single quotes, so
+    // expand_variables() must leave it alone (real shells don't expand
+    // $vars inside '...', only inside "..." or bare words).
+    char noexp[INPUT_SIZE];
 } Token;
 
 void init_promt()
@@ -135,6 +139,7 @@ int tokenize(char* line, Token tokens[])
         // hit whitespace or one of the special symbols above (but only
         // when we are NOT inside quotes).
         char word[INPUT_SIZE];
+        char protect[INPUT_SIZE];
         int wi = 0;
 
         while (i < len && !isspace((unsigned char)line[i]) &&
@@ -144,10 +149,13 @@ int tokenize(char* line, Token tokens[])
             if (line[i] == '"' || line[i] == '\'')
             {
                 char quote = line[i];
+                int single = (quote == '\'');
                 i++;
                 while (i < len && line[i] != quote)
                 {
-                    word[wi++] = line[i];
+                    word[wi] = line[i];
+                    protect[wi] = single;
+                    wi++;
                     i++;
                 }
                 if (i < len)
@@ -155,7 +163,9 @@ int tokenize(char* line, Token tokens[])
             }
             else
             {
-                word[wi++] = line[i];
+                word[wi] = line[i];
+                protect[wi] = 0;
+                wi++;
                 i++;
             }
         }
@@ -163,6 +173,7 @@ int tokenize(char* line, Token tokens[])
         word[wi] = '\0';
         tokens[count].type = WORD;
         strcpy(tokens[count].text, word);
+        memcpy(tokens[count].noexp, protect, wi);
         count++;
     }
 
@@ -173,9 +184,10 @@ int tokenize(char* line, Token tokens[])
  * Replaces every $name found in "in" with the value of the environment
  * variable "name" (getenv), and writes the result to "out". If the
  * variable does not exist it is simply replaced with nothing, same as a
- * real shell would do.
+ * real shell would do. "noexp" marks characters that were inside single
+ * quotes, where a real shell keeps the $ literal instead of expanding it.
  */
-void expand_variables(const char* in, char* out)
+void expand_variables(const char* in, const char* noexp, char* out)
 {
     int len = strlen(in);
     int oi = 0;
@@ -183,7 +195,7 @@ void expand_variables(const char* in, char* out)
 
     while (i < len)
     {
-        if (in[i] == '$' && (isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_'))
+        if (in[i] == '$' && !noexp[i] && (isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_'))
         {
             int j = i + 1;
             char name[INPUT_SIZE];
@@ -216,8 +228,8 @@ void expand_variables(const char* in, char* out)
 }
 
 // Checks if "text" has the form name=value (name being a valid identifier).
-// On success, fills name/value and returns 1.
-int parse_assignment(const char* text, char* name, char* value)
+// On success, fills name/value (+ the matching noexp slice) and returns 1.
+int parse_assignment(const char* text, const char* noexp, char* name, char* value, char* value_noexp)
 {
     int i = 0;
 
@@ -233,6 +245,7 @@ int parse_assignment(const char* text, char* name, char* value)
     strncpy(name, text, i);
     name[i] = '\0';
     strcpy(value, text + i + 1);
+    memcpy(value_noexp, noexp + i + 1, strlen(value));
 
     return 1;
 }
@@ -274,7 +287,7 @@ void execute_segment(Token* seg, int seg_count)
         if (t->type == REDIR_IN)
         {
             i++;
-            expand_variables(seg[i].text, stage_infile[stage]);
+            expand_variables(seg[i].text, seg[i].noexp, stage_infile[stage]);
             stage_has_infile[stage] = 1;
             continue;
         }
@@ -283,14 +296,14 @@ void execute_segment(Token* seg, int seg_count)
         {
             stage_append[stage] = (t->type == REDIR_APPEND);
             i++;
-            expand_variables(seg[i].text, stage_outfile[stage]);
+            expand_variables(seg[i].text, seg[i].noexp, stage_outfile[stage]);
             stage_has_outfile[stage] = 1;
             continue;
         }
 
         // plain WORD -> one more argv entry for the current stage
         int argi = stage_argc[stage];
-        expand_variables(t->text, stage_argv_buf[stage][argi]);
+        expand_variables(t->text, t->noexp, stage_argv_buf[stage][argi]);
         stage_argv[stage][argi] = stage_argv_buf[stage][argi];
         stage_argc[stage]++;
     }
@@ -418,6 +431,7 @@ void read_promt()
             {
                 char name[INPUT_SIZE];
                 char value[INPUT_SIZE];
+                char value_noexp[INPUT_SIZE];
 
                 if (seg_count == 1 && tokens[seg_start].type == WORD &&
                     strcmp(tokens[seg_start].text, "exit") == 0)
@@ -425,10 +439,11 @@ void read_promt()
                     exit(EXIT_SUCCESS);
                 }
                 else if (seg_count == 1 && tokens[seg_start].type == WORD &&
-                         parse_assignment(tokens[seg_start].text, name, value))
+                         parse_assignment(tokens[seg_start].text, tokens[seg_start].noexp,
+                                           name, value, value_noexp))
                 {
                     char expanded[INPUT_SIZE];
-                    expand_variables(value, expanded);
+                    expand_variables(value, value_noexp, expanded);
                     setenv(name, expanded, 1);
                 }
                 else
