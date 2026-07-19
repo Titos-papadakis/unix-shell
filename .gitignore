@@ -1,0 +1,5 @@
+hy345sh
+*.o
+
+# course handout PDFs, not part of the deliverable
+*.pdf
